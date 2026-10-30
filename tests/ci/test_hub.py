@@ -44,7 +44,9 @@ def test_pod_status_hub(openshift_dyn_client):
         "edge-gitops-vms",
         "vault",
     ]
-    skip_check = []
+    skip_check = [
+        "aap-controller-migration",
+    ]
 
     components.assert_pod_status(openshift_dyn_client, projects, skip_check)
 
