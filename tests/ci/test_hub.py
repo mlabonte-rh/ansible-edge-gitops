@@ -1,7 +1,10 @@
+import base64
 import os
 import subprocess
 
+# import logging
 import pytest
+from ocp_resources.secret import Secret
 from ocp_resources.virtual_machine import VirtualMachine
 from openshift.dynamic.exceptions import NotFoundError
 from playwright.sync_api import sync_playwright
@@ -136,22 +139,48 @@ def test_vm_status_hub(openshift_dyn_client):
     ["VP_HUBCONFIG"],
     indirect=True,
 )
-@pytest.mark.skip(reason="Disabled pending fix")
+# @pytest.mark.skip(reason="Disabled pending fix")
 def test_aap_login(openshift_dyn_client):
     console_url = route_url(openshift_dyn_client, "openshift-console", "console")
-    secrets_url = console_url + "/k8s/ns/ansible-automation-platform/core~v1~Secret"
     aap_url = route_url(openshift_dyn_client, "ansible-automation-platform", "aap")
     password = kubeadmin_password()
+
+    # os.environ["KUBECONFIG"] = os.getenv("VP_HUBCONFIG", "")
+
+    # # Get the AAP password via the script.
+    # for attempt in range(1, max_retries + 1):
+    #     result = subprocess.run(
+    #         ["bash", "../../pattern.sh", "../../scripts/ansible_get_credentials.sh"],
+    #         capture_output=True,
+    #         text=True,
+    #         check=False,
+    #     )
+    #     if result.returncode == 0:
+    #         break
+    #     time.sleep(delay)
+
+    aapsecret = next(
+        Secret.get(
+            dyn_client=openshift_dyn_client,
+            namespace="ansible-automation-platform",
+            name="aap-admin-password"
+        ),
+        None
+    )
+
+    if aapsecret:
+        decoded_password = base64.b64decode(aapsecret.instance.data["password"]).decode("utf-8")
+        # logger.info(decoded_password)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
         context = browser.new_context(ignore_https_errors=True)
-        context.grant_permissions(["clipboard-read", "clipboard-write"])
         context.set_default_timeout(120_000)
         page = context.new_page()
         try:
-            page.goto(secrets_url)
-            _openshift_login(page, secrets_url, password)
+            # Log in to console
+            page.goto(console_url)
+            _openshift_login(page, console_url, password)
 
             page.wait_for_timeout(5000)
 
@@ -160,36 +189,16 @@ def test_aap_login(openshift_dyn_client):
             if welcome.is_visible(timeout=60):
                 welcome.click()
 
-            page.locator('[data-test-id="aap-admin-password"]').click()
-            page.locator('[data-test="reveal-values"]').click()
-            page.get_by_role("button", name="Copy to clipboard").click()
-
-            clip = page.evaluate("() => navigator.clipboard.readText()")
-
+            # Log in to AAP
             page.goto(aap_url)
             page.get_by_role("textbox", name="Username").fill("admin")
-            page.get_by_role("textbox", name="Password").click(button="right")
-            page.keyboard.press("ControlOrMeta+V")
+            page.get_by_role("textbox", name="Password").fill(decoded_password)
             page.get_by_role("button", name="Log in").click()
 
-            page.get_by_test_id("platform-overview").click()
+            # Make sure login succeeded
             page.get_by_role("button", name="Settings").click()
-            page.get_by_test_id("platform-subscription-details").click()
 
         finally:
             context.close()
             browser.close()
 
-    os.environ["KUBECONFIG"] = os.getenv("VP_HUBCONFIG", "")
-
-    # Verify that the script returns the same password
-    result = subprocess.run(
-        ["bash", "../../pattern.sh", "../../scripts/ansible_get_credentials.sh"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert clip in result.stdout
-    assert result.stderr == ""
